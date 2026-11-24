@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>LiveCord</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #1e1f22; color: #dbdee1; font: 15px/1.6 "Segoe UI", "Microsoft YaHei UI", sans-serif; display: flex; flex-direction: column; }
+  .drag { height: 32px; -webkit-app-region: drag; flex: none; }
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding-bottom: 60px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  p { margin: 0; color: #949ba4; }
+  button { margin-top: 14px; background: #5865f2; color: #fff; border: 0; border-radius: 6px; padding: 9px 22px; font: inherit; cursor: pointer; }
+  button:hover { background: #4752c4; }
+  small { color: #6d6f78; }
+</style>
+</head>
+<body>
+<div class="drag"></div>
+<main>
+  <h1>连不上 LiveCord</h1>
+  <p>请检查网络。恢复后会自动重新连接。</p>
+  <button id="retry">重试</button>
+  <small id="why"></small>
+</main>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById('why').textContent = q.get('why') || '';
+  const retry = () => window.lcShell && window.lcShell.retry();
+  document.getElementById('retry').onclick = retry;
+  let n = 0; setInterval(() => { if (navigator.onLine || ++n % 3 === 0) retry(); }, 8000);
+</script>
+</body>
+</html>

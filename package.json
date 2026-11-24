@@ -1,0 +1,71 @@
+{
+  "name": "livecord-desktop",
+  "productName": "LiveCord",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LiveCord 桌面版：聊天 + 直播（原生抓屏、显卡编码、按程序采集声音）",
+  "author": "LiveCord",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --lc-url=http://localhost:3187",
+    "build:native": "native\build.cmd",
+    "icon": "node build/make-icon.js",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.livecord.desktop",
+    "productName": "LiveCord",
+    "copyright": "LiveCord",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "offline.html",
+      "build/icon.ico"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "*.exe"
+        ]
+      }
+    ],
+    "asar": true,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "publish": null,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "LiveCord-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LiveCord",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
