@@ -13,6 +13,7 @@
 //   选项：--fps N --maxw W --maxh H（输出不超过这个尺寸，等比缩小） --bitrate BPS --cursor 0|1 --preview 0|1 --pvw W
 //         --codec 0|1（0 = H.264，1 = AV1；AV1 要显卡有硬件编码器，没有就报错退出，由软件退回别的办法）
 //         --lobitrate BPS --lomaxh H --lofps N（另出一路低档，见下面的"管线"）
+//         --pvraw 1（预览不用共享纹理，改成读回内存后从标准输出送出：类型 4，BGRA。给 WebView2 轻量版用）
 //
 // 和父进程的约定：
 //   标准输出：一条条消息，头 16 字节 [u32 长度][u8 类型][u8 标志][u16 保留][u64 时间戳微秒]，后面是内容
@@ -86,7 +87,7 @@ static int die(const char* what, HRESULT hr = 0) { event("{\"ev\":\"error\",\"ms
 static double nowSec() { static LARGE_INTEGER f; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return (double)c.QuadPart / f.QuadPart; }
 static std::string narrow(const wchar_t* w) { std::string s; for (; *w; w++) s += (*w < 128 && *w != '"' && *w != '\\') ? (char)*w : '?'; return s; }
 
-struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0; };
+struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0, pvraw = 0; };
 static Args A;
 static std::atomic<int> gBitrate{0}, gBitrateLo{0};
 static std::atomic<bool> gQuit{false}, gPreview{true};
@@ -123,6 +124,42 @@ struct Pool {
   std::string handlesJson() const { std::string s = "["; for (size_t i = 0; i < slots.size(); i++) { if (i) s += ","; s += std::to_string((unsigned long long)(UINT_PTR)slots[i].remote); } return s + "]"; }
 };
 static Pool pvPool;
+
+// ---------------- 预览的另一种出法：读回内存（--pvraw 1） ----------------
+// 给没有共享纹理接口的外壳（WebView2 轻量版）用：小尺寸画面读回内存，随标准输出送出去（类型 4，BGRA，一行紧挨一行）。
+// 读回是异步的：这一帧拷进暂存纹理，之后用"不等待"的方式去取，取到了再发。显卡被游戏占满时不会卡住采集
+struct RawPv {
+  com_ptr<ID3D11Texture2D> rt, stage; com_ptr<ID3D11RenderTargetView> rtv; int w = 0, h = 0; bool pending = false; ULONGLONG ts = 0;
+  std::mutex mu; std::vector<BYTE> buf;
+  HRESULT create(int W, int H) {
+    destroy(); w = W; h = H;
+    D3D11_TEXTURE2D_DESC d{}; d.Width = W; d.Height = H; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM; d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_RENDER_TARGET;
+    HRESULT hr = dev->CreateTexture2D(&d, nullptr, rt.put()); if (FAILED(hr)) return hr;
+    if (FAILED(hr = dev->CreateRenderTargetView(rt.get(), nullptr, rtv.put()))) return hr;
+    d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    return dev->CreateTexture2D(&d, nullptr, stage.put());
+  }
+  void destroy() { rt = nullptr; stage = nullptr; rtv = nullptr; pending = false; }
+  // 调用方拿着显卡锁：把画好的这一帧排进读回
+  void queue(ULONGLONG t) { ctx->CopyResource(stage.get(), rt.get()); pending = true; ts = t; }
+  // 不拿显卡锁调用：上一帧读回好了就发出去
+  void pump() {
+    std::lock_guard<std::mutex> a(mu); ULONGLONG t = 0; bool have = false;
+    {
+      std::lock_guard<std::mutex> g(gpuMu);
+      if (!pending || !stage) return;
+      D3D11_MAPPED_SUBRESOURCE m{}; HRESULT hr = ctx->Map(stage.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+      if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return;
+      pending = false; if (FAILED(hr)) return;
+      buf.resize((size_t)w * h * 4);
+      for (int y = 0; y < h; y++) memcpy(buf.data() + (size_t)y * w * 4, (const BYTE*)m.pData + (size_t)y * m.RowPitch, (size_t)w * 4);
+      ctx->Unmap(stage.get(), 0); t = ts; have = true;
+    }
+    if (have) emit(4, 0, t, buf.data(), (DWORD)buf.size());
+  }
+};
+static RawPv rawPv;
 
 // ---------------- 着色器：缩放 + HDR→SDR + 转 NV12 ----------------
 static const char* HLSL = R"(
@@ -373,21 +410,22 @@ struct Pipeline {
       if (SUCCEEDED(lo.init(lw, lh, std::min(A.lofps, A.fps), gBitrateLo.load(), 1))) hasLo = true; else lo.destroy();
     }
     double ps = std::min(1.0, (double)A.pvw / outW); pvW = std::max(64, (int)(outW * ps + 0.5) & ~1); pvH = std::max(36, (int)(outH * ps + 0.5) & ~1);
-    if (FAILED(hr = pvPool.create(parent, 4, pvW, pvH))) return hr;
+    if (FAILED(hr = A.pvraw ? rawPv.create(pvW, pvH) : pvPool.create(parent, 4, pvW, pvH))) return hr;
     t0 = nowSec(); lastPv = 0;
     return S_OK;
   }
-  void destroy() { hi.destroy(); lo.destroy(); enc = nullptr; hasLo = false; pvPool.destroy(); }
+  void destroy() { hi.destroy(); lo.destroy(); enc = nullptr; hasLo = false; pvPool.destroy(); rawPv.destroy(); }
   void setConsts() { float c[4] = { hdr ? 1.f : 0.f, whiteScale, 0, 0 }; ctx->UpdateSubresource(sh.cb.get(), 0, nullptr, c, 0, 0); }
 
   // 来了一帧新画面。按目标帧率挑帧：屏幕 240Hz、目标 120 帧时每两帧取一帧
   void onFrame(ID3D11Texture2D* src) {
     arrived++;
     double t = nowSec() - t0;
+    if (A.pvraw) rawPv.pump();
     std::lock_guard<std::mutex> g(gpuMu);
     if (!hi.enc) return;
     bool wantHi = hi.take(t), wantLo = hasLo && lo.take(t);
-    bool wantPv = gPreview.load() && t - lastPv >= 1.0 / 30 - 0.002;
+    bool wantPv = gPreview.load() && t - lastPv >= (A.pvraw ? 1.0 / 20 : 1.0 / 30) - 0.002; // 读回内存的预览每秒 20 帧就够
     if (!wantHi && !wantLo) return; // 预览跟着主画面的节奏出，不单独抓
     if (wantHi) paced++;
     com_ptr<ID3D11ShaderResourceView> srv; if (FAILED(dev->CreateShaderResourceView(src, nullptr, srv.put()))) return;
@@ -395,13 +433,15 @@ struct Pipeline {
     if (wantHi) hi.draw(srv.get());
     if (wantLo) lo.draw(srv.get());
     int slot = -1;
-    if (wantPv) { slot = pvPool.acquire(); if (slot >= 0) { sh.pass(sh.psRGB.get(), pvPool.slots[slot].rtv.get(), pvW, pvH, srv.get()); lastPv = t; } }
+    if (wantPv && A.pvraw) { if (!rawPv.pending && rawPv.rtv) { sh.pass(sh.psRGB.get(), rawPv.rtv.get(), pvW, pvH, srv.get()); rawPv.queue((ULONGLONG)(t * 1e6)); lastPv = t; } }
+    else if (wantPv) { slot = pvPool.acquire(); if (slot >= 0) { sh.pass(sh.psRGB.get(), pvPool.slots[slot].rtv.get(), pvW, pvH, srv.get()); lastPv = t; } }
     ctx->Flush();
     if (wantHi) hi.submit(t);
     if (wantLo) lo.submit(t);
     if (slot >= 0) { pvPool.slots[slot].sentAt = nowSec(); emit(3, (BYTE)slot, (ULONGLONG)(t * 1e6), nullptr, 0); }
   }
   void tick() {
+    if (A.pvraw) rawPv.pump();
     std::lock_guard<std::mutex> g(gpuMu);
     double t = nowSec() - t0;
     hi.tick(t); if (hasLo) lo.tick(t);
@@ -567,7 +607,7 @@ static bool parse(int argc, char** argv) {
     std::string k = argv[i]; int v = atoi(argv[i + 1]);
     if (k == "--fps") A.fps = v; else if (k == "--maxw") A.maxw = v; else if (k == "--maxh") A.maxh = v; else if (k == "--bitrate") A.bitrate = v;
     else if (k == "--cursor") A.cursor = v; else if (k == "--preview") A.preview = v; else if (k == "--pvw") A.pvw = v;
-    else if (k == "--codec") A.codec = v;
+    else if (k == "--codec") A.codec = v; else if (k == "--pvraw") A.pvraw = v;
     else if (k == "--lobitrate") A.lobitrate = v; else if (k == "--lomaxh") A.lomaxh = v; else if (k == "--lofps") A.lofps = v;
   }
   if (A.fps < 1 || A.fps > 480) A.fps = 60;

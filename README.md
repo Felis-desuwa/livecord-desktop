@@ -2,8 +2,19 @@
 
 [LiveCord](https://live.felisnyan.com) 的 Windows 桌面软件：聊天 + 直播。和网页版是同一个站、同一套账号，互相能聊天、能看对方的直播。
 
-下载：<https://github.com/Felis-desuwa/livecord-desktop/releases/latest/download/LiveCord-Setup.exe>
+下载（1.0.2 起有两个）：
+
+- **安装器**（约 0.4 MB，安装时选版本）：<https://github.com/Felis-desuwa/livecord-desktop/releases/latest/download/LiveCord-Installer.exe>
+- **完整版安装包**（约 100 MB，直接装完整版）：<https://github.com/Felis-desuwa/livecord-desktop/releases/latest/download/LiveCord-Setup.exe>
+
 （安装包没有代码签名，Windows 可能提示"未知发布者"，点"更多信息 → 仍要运行"。装到当前用户目录，不需要管理员权限。）
+
+| | 完整版（推荐） | 轻量版（试验） |
+|---|---|---|
+| 浏览器内核 | 自带（Electron 45 / Chromium 156，版本固定） | 用系统里的 WebView2（Edge 内核，随系统自动更新） |
+| 下载 / 装好后占用 | 约 100 MB / 280 MB | 约 0.4 MB / 不到 1 MB |
+| 内存、CPU | 见下面的实测 | 不比完整版少（空闲时实测 420 MB，完整版 370 MB） |
+| 直播 | 各项数据都是在它上面实测的 | 功能相同；差别和风险见「轻量版」一节 |
 
 ## 和网页版比多了什么
 
@@ -28,7 +39,7 @@
 | 空闲（已登录，窗口开着） | — | — | 1%（整机 0.04%） | 370 / 182 MB | 0 / 0 | 31 MB |
 | 流畅：1080p 60 帧 8 Mbps | 60 / 60 | 2.1 ms | 44%（整机 1.8%） | 755 / 513 MB | 0.9% / 9.8% | 205 MB |
 | 高清：1440p 60 帧 20 Mbps + 流畅档 | 60 / 60 | 3.6 ms | 59%（整机 2.5%） | 775 / 570 MB | 1.1% / 19% | 252 MB |
-| 极致：1440p 120 帧 40 Mbps + 流畅档 | 119.7 / 119.8（最低 116） | 3.6 ms | 89%（整机 3.7%） | 760 / 553 MB | 1.5% / 35% | 251 MB |
+| 1440p 120 帧 40 Mbps + 流畅档（「极致」预设现在是 60 Mbps） | 119.7 / 119.8（最低 116） | 3.6 ms | 89%（整机 3.7%） | 760 / 553 MB | 1.5% / 35% | 251 MB |
 
 "编码器"那一栏是显卡上专门的编码电路（NVENC），不和游戏抢渲染资源；和游戏抢的"3D"部分只有 1% 左右。CPU 里大头是把码流发出去（加密 + 发包），和码率成正比。
 
@@ -54,6 +65,35 @@
   （一帧不丢、关键帧位置对上），见 `public/desktop-vworker.js` 里的"严格模式"
 - 本机实测（没开游戏，测试画面）：3840×2160 / 120 帧，编码 119.9 帧、每帧 4.9 毫秒，观众端解码约 119 帧。**边打游戏时的表现还没测**
 
+## 轻量版（1.0.2 起，试验）
+
+`lite/` 目录：一个 400 KB 的原生外壳（`lc-lite.cpp`），不带浏览器内核，用系统里的 WebView2。画面和声音还是那两个助手，网站的界面代码一行没为它改 —— 外壳往页面里注入一段脚本（`lite/shim.js`），提供和完整版一样的 `window.lcDesktop` 接口。
+
+和完整版不一样的地方：
+
+- **数据通道**：WebView2 的外壳和页面之间只能互发文字。码流、声音、预览放在一块共享内存里（外壳写、页面只读），外壳每写一段发一条很短的通知，页面拷出来再交给 Worker / AudioWorklet。所以数据**要经过页面主线程**（完整版是主进程直接送进 Worker 的）。
+- **预览**：没有共享纹理接口，改成助手把小画面读回内存（`lc-capture --pvraw 1`，640 宽、每秒 20 帧）。
+- **标题栏**：用系统自己的。
+- **退回浏览器采集时**（选了 VP9，或原生采集起不来）：弹的是内核自己的共享选择框，开播面板里选的来源不起作用。
+
+本机实测（WebView2 158，测试画面，没开游戏，本机转发服务器 + 无窗口 Chrome 当观众）：
+
+| | 完整版 | 轻量版 |
+|---|---|---|
+| H.264 1440p 120 帧 60 Mbps + 流畅档 | 编码 120 帧，观众 120 帧 | 编码 120 帧，观众 120 帧 |
+| AV1 1440p 120 帧 40 Mbps | 119.9 帧 | 120 帧 |
+| 码流从助手到 Worker 的额外延迟 | — | 请求关键帧到收到平均 12 毫秒，最长 33 毫秒 |
+| 稳定直播时发送端到服务器的丢包 | 0 | 0 |
+| 新观众进来的那一下，发送端到服务器的丢包重传 | 0 包 | 每次 24～91 包（都重传成功） |
+| 新观众的首帧时间（约 25 次） | 都是 1.3 秒 | 多数 1.3 秒，2 次 3 秒（关键帧缺包，等了服务器 2 秒的节流） |
+| 空闲内存 | 370 MB | 420 MB |
+
+**风险**（安装器里也写了）：
+
+- 内核版本不归软件管。高帧率直播靠的那几条规则（见 `public/desktop-vworker.js` 开头）是在固定版本上实测出来的，系统更新 WebView2 之后可能失效，而且事先拦不住。
+- 上表里"新观众进来时的丢包"是架构带来的：数据经过页面主线程，到达的节奏不如完整版均匀。真实网络、真实游戏负载下没测过。
+- 没测过的：边打游戏时的表现、长时间直播、全屏看别人直播、Windows 10、没有 WebView2 运行时的电脑（外壳会提示改装完整版）。
+
 ## 开发
 
 ```
@@ -61,8 +101,15 @@ npm install
 npm run build:native     # 编译两个助手到 bin\（需要 Visual Studio 的 C++ 工具集）
 npm run dev              # 连本地的网站实例 http://localhost:3187
 npm start                # 连线上
-npm run dist             # 打安装包到 dist\LiveCord-Setup.exe
+npm run dist             # 打完整版安装包到 dist\LiveCord-Setup.exe
+
+lite\build.cmd           # 编译轻量版外壳到 lite\out\LiveCordLite.exe
+                         #（先把微软的 Microsoft.Web.WebView2 NuGet 包解到 lite\webview2sdk：要 build\native\include 和 build\native\x64）
+node lite\make-installer.js   # 打「可选版本」的安装器到 dist\LiveCord-Installer.exe（用 electron-builder 缓存里的 NSIS，先跑过一次 npm run dist）
 ```
+
+- 轻量版的启动参数：`--lc-url=`、`--lc-hidden`（窗口放到屏幕外）、`--lc-noactivate`（正常显示但不抢焦点）、`--remote-debugging-port=`。数据目录 `%LOCALAPPDATA%\LiveCord Lite`（环境变量 `LC_USER_DATA` 可改）。页面里 `lcDesktop._lite()` 能看数据通道的统计。
+- 安装器：选完整版时是从 GitHub 下载 `LiveCord-Setup.exe` 再运行；静默安装（`/S`）装的是轻量版，加 `/NORUN` 装完不打开。
 
 - 界面代码在网站那边：`public/desktop.js`、`public/desktop.css`、`public/desktop-vworker.js`、`public/desktop-pcm.js`（只有桌面版会加载）。
 - `npm run dist` 要在路径不太长的目录里跑（安装包工具打不开超长路径）。

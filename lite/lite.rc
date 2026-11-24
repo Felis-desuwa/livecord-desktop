@@ -1,0 +1,32 @@
+#include <winver.h>
+#pragma code_page(65001)
+
+1 ICON "..\\build\\icon.ico"
+101 RCDATA "shim.js"
+102 RCDATA "..\\offline.html"
+1 24 "lite.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,2,0
+PRODUCTVERSION 1,0,2,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404b0"
+    BEGIN
+      VALUE "CompanyName", "LiveCord"
+      VALUE "FileDescription", "LiveCord 轻量版"
+      VALUE "FileVersion", "1.0.2"
+      VALUE "InternalName", "LiveCordLite"
+      VALUE "OriginalFilename", "LiveCordLite.exe"
+      VALUE "ProductName", "LiveCord 轻量版"
+      VALUE "ProductVersion", "1.0.2"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0804, 1200
+  END
+END
