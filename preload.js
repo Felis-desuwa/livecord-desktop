@@ -39,6 +39,7 @@ if (location.protocol === 'file:') {
     audioStart: call('lc:audio-start'),   // { mode: 'app' | 'except' | 'all', pid }
     audioStop: call('lc:audio-stop'),
     onAudioState: on(subs.audio),
+    caps: call('lc:caps'),                // 这个版本的软件会什么（1.0.1 起）
     videoStart: call('lc:video-start'),   // { sourceId, fps, maxw, maxh, bitrate, preview }：原生采集 + 编码。码流走 lcVideoPort 端口，预览帧随 message 事件的 lcFrame 送达
     videoStop: call('lc:video-stop'),
     videoBitrate: call('lc:video-bitrate'),

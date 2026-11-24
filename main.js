@@ -243,7 +243,7 @@ function videoCmd(line) { if (video) { try { video.proc.stdin.write(line + '\n')
 function startVideo(o) {
   stopVideo();
   const args = [String(process.pid)];
-  if (o.test) args.push('test');
+  if (o.test || o.sourceId === 'test') args.push('test'); // 测试画面（满屏变化的色块），排查问题用
   else {
     const id = String(o.sourceId || ''); const m = /^(screen|window):(\d+):/.exec(id);
     if (!m) throw new Error('bad source');
@@ -256,6 +256,7 @@ function startVideo(o) {
       args.push('monitor', String(Math.round(r.x + r.width / 2)), String(Math.round(r.y + r.height / 2)));
     }
   }
+  if (o.codec === 'av1') args.push('--codec', '1'); // 默认 H.264
   for (const k of ['fps', 'maxw', 'maxh', 'bitrate', 'cursor', 'preview', 'pvw', 'lobitrate', 'lomaxh', 'lofps']) if (o[k] != null && Number.isFinite(Number(o[k]))) args.push('--' + k, String(Math.round(Number(o[k]))));
   const proc = spawn(CAPTURE, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const { port1, port2 } = new MessageChannelMain();
@@ -281,7 +282,7 @@ function startVideo(o) {
     const onEvent = (m) => {
       if (m.ev === 'init' || m.ev === 'size') {
         me.info = m; me.handles = (m.handles || []).map((h) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(h)); return b; });
-        const info = { w: m.w, h: m.h, srcw: m.srcw, srch: m.srch, fps: m.fps, hdr: !!m.hdr, white: m.white, enc: m.enc, pw: m.pw, ph: m.ph, low: m.low || 0, loh: m.loh || 0, lofps: m.lofps || 0 };
+        const info = { codec: m.codec || 'h264', w: m.w, h: m.h, srcw: m.srcw, srch: m.srch, fps: m.fps, hdr: !!m.hdr, white: m.white, enc: m.enc, pw: m.pw, ph: m.ph, low: m.low || 0, loh: m.loh || 0, lofps: m.lofps || 0 };
         if (!settled) { settled = true; resolve(info); win.webContents.postMessage('lc:video-port', null, [port2]); }
         else send('lc:video-state', { state: 'size', ...info });
       } else if (m.ev === 'stats') send('lc:video-state', { state: 'stats', ...m });
@@ -322,6 +323,8 @@ handle('lc:pick-source', (id) => { pendingSource = typeof id === 'string' ? id :
 handle('lc:audio-apps', () => listAudioApps());
 handle('lc:audio-start', (o) => { startAudio({ mode: String(o?.mode || 'all'), pid: Number(o?.pid) }); return true; });
 handle('lc:audio-stop', () => { stopAudio(); return true; });
+// 这个版本的软件会什么：网站的界面据此决定给不给选项（旧版本没有这个接口，界面就按"只会 H.264"处理）
+handle('lc:caps', () => ({ native: true, av1: true }));
 handle('lc:video-start', (o) => startVideo(o || {}));
 handle('lc:video-stop', () => { stopVideo(); return true; });
 handle('lc:video-bitrate', (b, lo) => { const v = Math.round(Number(b)); if (v >= 100000 && v <= 200000000) videoCmd('br ' + v); const l = Math.round(Number(lo)); if (l >= 100000 && l <= 50000000) videoCmd('brlo ' + l); return true; });

@@ -11,10 +11,12 @@
 //   lc-capture <父进程号> window <HWND> [选项]       采集一个窗口
 //   lc-capture <父进程号> test [选项]                不采集，编码测试画面（验证链路用）
 //   选项：--fps N --maxw W --maxh H（输出不超过这个尺寸，等比缩小） --bitrate BPS --cursor 0|1 --preview 0|1 --pvw W
+//         --codec 0|1（0 = H.264，1 = AV1；AV1 要显卡有硬件编码器，没有就报错退出，由软件退回别的办法）
+//         --lobitrate BPS --lomaxh H --lofps N（另出一路低档，见下面的"管线"）
 //
 // 和父进程的约定：
 //   标准输出：一条条消息，头 16 字节 [u32 长度][u8 类型][u8 标志][u16 保留][u64 时间戳微秒]，后面是内容
-//     类型 1  一帧 H.264（Annex-B），标志 bit0 = 关键帧
+//     类型 1  一帧码流（H.264 是 Annex-B；AV1 是一个时间单元的 OBU），标志 bit0 = 关键帧，bit1 = 低档
 //     类型 2  JSON 事件：init / stats / size / closed / error
 //     类型 3  预览帧写好了，标志 = 共享纹理槽位
 //   标准输入（一行一条）：br <bps> 改码率 / key 要关键帧 / pv 0|1 开关预览 / R <槽位> 预览纹理用完了 / quit
@@ -61,6 +63,8 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "ole32.lib")
 
+// AV1 的媒体子类型（'AV01'）。旧一点的 SDK 头文件里没有这个名字，自己定义
+DEFINE_GUID(LC_MFVideoFormat_AV1, 0x31305641, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
 namespace wgc = winrt::Windows::Graphics::Capture;
 namespace wdx = winrt::Windows::Graphics::DirectX;
 using winrt::com_ptr;
@@ -82,7 +86,7 @@ static int die(const char* what, HRESULT hr = 0) { event("{\"ev\":\"error\",\"ms
 static double nowSec() { static LARGE_INTEGER f; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return (double)c.QuadPart / f.QuadPart; }
 static std::string narrow(const wchar_t* w) { std::string s; for (; *w; w++) s += (*w < 128 && *w != '"' && *w != '\\') ? (char)*w : '?'; return s; }
 
-struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30; };
+struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0; };
 static Args A;
 static std::atomic<int> gBitrate{0}, gBitrateLo{0};
 static std::atomic<bool> gQuit{false}, gPreview{true};
@@ -187,7 +191,8 @@ struct Encoder {
 
   HRESULT init(int W, int H, int FPS, int bps) {
     w = W; h = H; fps = FPS; HRESULT hr;
-    MFT_REGISTER_TYPE_INFO in{ MFMediaType_Video, MFVideoFormat_NV12 }, out{ MFMediaType_Video, MFVideoFormat_H264 };
+    const bool av1 = A.codec == 1; const GUID outFmt = av1 ? LC_MFVideoFormat_AV1 : MFVideoFormat_H264;
+    MFT_REGISTER_TYPE_INFO in{ MFMediaType_Video, MFVideoFormat_NV12 }, out{ MFMediaType_Video, outFmt };
     com_ptr<IMFAttributes> ea; MFCreateAttributes(ea.put(), 1); ea->SetBlob(MFT_ENUM_ADAPTER_LUID, (const UINT8*)&adapterLuid, sizeof(LUID));
     IMFActivate** acts = nullptr; UINT32 n = 0;
     hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, &in, &out, ea.get(), &acts, &n);
@@ -214,9 +219,9 @@ struct Encoder {
     };
     modes();
     com_ptr<IMFMediaType> ot; MFCreateMediaType(ot.put());
-    ot->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); ot->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+    ot->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); ot->SetGUID(MF_MT_SUBTYPE, outFmt);
     ot->SetUINT32(MF_MT_AVG_BITRATE, bps); MFSetAttributeRatio(ot.get(), MF_MT_FRAME_RATE, fps, 1); MFSetAttributeSize(ot.get(), MF_MT_FRAME_SIZE, w, h);
-    ot->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive); ot->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main);
+    ot->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive); if (!av1) ot->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main);
     MFSetAttributeRatio(ot.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     ot->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235); ot->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
     ot->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709); ot->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
@@ -469,8 +474,8 @@ static void statsLoop(HANDLE parent) {
 }
 
 static void announce(const char* ev) {
-  event("{\"ev\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
-    ev, pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.pvW, pl.pvH,
+  event("{\"ev\":\"%s\",\"codec\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
+    ev, A.codec == 1 ? "av1" : "h264", pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.pvW, pl.pvH,
     pl.hasLo ? pl.lo.w : 0, pl.hasLo ? pl.lo.h : 0, pl.hasLo ? pl.lo.fps : 0, pvPool.handlesJson().c_str());
 }
 
@@ -562,6 +567,7 @@ static bool parse(int argc, char** argv) {
     std::string k = argv[i]; int v = atoi(argv[i + 1]);
     if (k == "--fps") A.fps = v; else if (k == "--maxw") A.maxw = v; else if (k == "--maxh") A.maxh = v; else if (k == "--bitrate") A.bitrate = v;
     else if (k == "--cursor") A.cursor = v; else if (k == "--preview") A.preview = v; else if (k == "--pvw") A.pvw = v;
+    else if (k == "--codec") A.codec = v;
     else if (k == "--lobitrate") A.lobitrate = v; else if (k == "--lomaxh") A.lomaxh = v; else if (k == "--lofps") A.lofps = v;
   }
   if (A.fps < 1 || A.fps > 480) A.fps = 60;
