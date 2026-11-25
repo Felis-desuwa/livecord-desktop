@@ -13,6 +13,7 @@
 //   选项：--fps N --maxw W --maxh H（输出不超过这个尺寸，等比缩小） --bitrate BPS --cursor 0|1 --preview 0|1 --pvw W
 //         --codec 0|1（0 = H.264，1 = AV1；AV1 要显卡有硬件编码器，没有就报错退出，由软件退回别的办法）
 //         --lobitrate BPS --lomaxh H --lofps N（另出一路低档，见下面的"管线"）
+//         --speed N（编码器的质量 / 速度档位 0～100，0 最快；不给就自动选，见 Encoder::init）
 //         --pvraw 1（预览不用共享纹理，改成读回内存后从标准输出送出：类型 4，BGRA。给 WebView2 轻量版用）
 //
 // 和父进程的约定：
@@ -87,7 +88,7 @@ static int die(const char* what, HRESULT hr = 0) { event("{\"ev\":\"error\",\"ms
 static double nowSec() { static LARGE_INTEGER f; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return (double)c.QuadPart / f.QuadPart; }
 static std::string narrow(const wchar_t* w) { std::string s; for (; *w; w++) s += (*w < 128 && *w != '"' && *w != '\\') ? (char)*w : '?'; return s; }
 
-struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0, pvraw = 0; };
+struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0, pvraw = 0, speed = -1; };
 static Args A;
 static std::atomic<int> gBitrate{0}, gBitrateLo{0};
 static std::atomic<bool> gQuit{false}, gPreview{true};
@@ -217,7 +218,7 @@ static Shaders sh;
 struct Encoder {
   com_ptr<IMFTransform> mft; com_ptr<IMFMediaEventGenerator> evg; com_ptr<ICodecAPI> codec; com_ptr<IMFDXGIDeviceManager> mgr; UINT token = 0;
   std::mutex mu; std::atomic<int> need{0}; std::atomic<bool> stop{false}; HANDLE thread = nullptr; bool providesSamples = true; DWORD outSize = 0;
-  int w = 0, h = 0, fps = 60; std::string name; BYTE layer = 0; std::atomic<bool>* keyFlag = nullptr;
+  int w = 0, h = 0, fps = 60, speed = 50; std::string name; BYTE layer = 0; std::atomic<bool>* keyFlag = nullptr;
   // 统计
   std::atomic<long long> encFrames{0}, encBytes{0}, busyDrops{0}; std::atomic<long long> latSumUs{0}, latN{0};
   struct Pending { LONGLONG ts; double at; }; std::vector<Pending> pending; std::mutex pmu;
@@ -228,7 +229,12 @@ struct Encoder {
 
   HRESULT init(int W, int H, int FPS, int bps) {
     w = W; h = H; fps = FPS; HRESULT hr;
-    const bool av1 = A.codec == 1; const GUID outFmt = av1 ? LC_MFVideoFormat_AV1 : MFVideoFormat_H264;
+    const bool av1 = A.codec == 1;
+    // 质量 / 速度档位（0 最快，50 是中间档）。编码器一帧一帧串行处理，每帧耗时一超过帧间隔就得丢帧。
+    // 实测（RTX 5070 Ti，显卡被别的程序占到 90% 以上）AV1 1440p：50 档每帧 5.3 毫秒，240 帧只出得来 180；0 档 4.1 毫秒，出 235。
+    // 1080p 240 帧、1440p 120 帧用 50 档都跑得满。所以 AV1 每秒像素数超过 6 亿（1440p 约 160 帧以上、4K 约 72 帧以上）时用最快档，
+    // 画质代价不大（同码率下 VMAF 低约 1 分）。H.264 没测过这个档位，不动。--speed N 可以强制指定
+    speed = A.speed >= 0 ? std::min(A.speed, 100) : (av1 && (double)w * h * fps > 6e8 ? 0 : 50); const GUID outFmt = av1 ? LC_MFVideoFormat_AV1 : MFVideoFormat_H264;
     MFT_REGISTER_TYPE_INFO in{ MFMediaType_Video, MFVideoFormat_NV12 }, out{ MFMediaType_Video, outFmt };
     com_ptr<IMFAttributes> ea; MFCreateAttributes(ea.put(), 1); ea->SetBlob(MFT_ENUM_ADAPTER_LUID, (const UINT8*)&adapterLuid, sizeof(LUID));
     IMFActivate** acts = nullptr; UINT32 n = 0;
@@ -252,7 +258,7 @@ struct Encoder {
       setBool(CODECAPI_AVLowLatencyMode, true);
       setU32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
       setU32(CODECAPI_AVEncMPVGOPSize, 0x7fffffff); // 不定期出关键帧，只在有人要的时候出（key 命令）
-      setU32(CODECAPI_AVEncCommonQualityVsSpeed, 50);
+      setU32(CODECAPI_AVEncCommonQualityVsSpeed, (ULONG)speed);
     };
     modes();
     com_ptr<IMFMediaType> ot; MFCreateMediaType(ot.put());
@@ -514,8 +520,8 @@ static void statsLoop(HANDLE parent) {
 }
 
 static void announce(const char* ev) {
-  event("{\"ev\":\"%s\",\"codec\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
-    ev, A.codec == 1 ? "av1" : "h264", pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.pvW, pl.pvH,
+  event("{\"ev\":\"%s\",\"codec\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"speed\":%d,\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
+    ev, A.codec == 1 ? "av1" : "h264", pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.enc ? pl.enc->speed : -1, pl.pvW, pl.pvH,
     pl.hasLo ? pl.lo.w : 0, pl.hasLo ? pl.lo.h : 0, pl.hasLo ? pl.lo.fps : 0, pvPool.handlesJson().c_str());
 }
 
@@ -607,7 +613,7 @@ static bool parse(int argc, char** argv) {
     std::string k = argv[i]; int v = atoi(argv[i + 1]);
     if (k == "--fps") A.fps = v; else if (k == "--maxw") A.maxw = v; else if (k == "--maxh") A.maxh = v; else if (k == "--bitrate") A.bitrate = v;
     else if (k == "--cursor") A.cursor = v; else if (k == "--preview") A.preview = v; else if (k == "--pvw") A.pvw = v;
-    else if (k == "--codec") A.codec = v; else if (k == "--pvraw") A.pvraw = v;
+    else if (k == "--codec") A.codec = v; else if (k == "--pvraw") A.pvraw = v; else if (k == "--speed") A.speed = v;
     else if (k == "--lobitrate") A.lobitrate = v; else if (k == "--lomaxh") A.lomaxh = v; else if (k == "--lofps") A.lofps = v;
   }
   if (A.fps < 1 || A.fps > 480) A.fps = 60;
