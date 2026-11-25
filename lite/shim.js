@@ -71,7 +71,7 @@
   function onVideoEvent(g, d) {
     const v = vid; if (!v || v.gen !== g || !d) return;
     if (d.ev === 'init' || d.ev === 'size') {
-      const info = { codec: d.codec || 'h264', w: d.w, h: d.h, srcw: d.srcw, srch: d.srch, fps: d.fps, hdr: !!d.hdr, white: d.white, enc: d.enc, pw: d.pw, ph: d.ph, low: d.low || 0, loh: d.loh || 0, lofps: d.lofps || 0 };
+      const info = { codec: d.codec || 'h264', w: d.w, h: d.h, srcw: d.srcw, srch: d.srch, fps: d.fps, hdr: !!d.hdr, white: d.white, enc: d.enc, tl: d.tl || 0, speed: d.speed, pw: d.pw, ph: d.ph, low: d.low || 0, loh: d.loh || 0, lofps: d.lofps || 0 };
       v.info = info;
       if (!v.settled) {
         v.settled = true;
@@ -105,7 +105,7 @@
       if (vid) { try { vid.port && vid.port.close(); } catch {} }
       const v = vid = { gen: -1, port: null, info: null, res, rej, settled: false };
       const kv = ['source=' + (o.test ? 'test' : String(o.sourceId || ''))];
-      for (const k of ['fps', 'maxw', 'maxh', 'bitrate', 'cursor', 'preview', 'lobitrate', 'lomaxh', 'lofps']) if (o[k] != null && Number.isFinite(Number(o[k]))) kv.push(k + '=' + Math.round(Number(o[k])));
+      for (const k of ['fps', 'maxw', 'maxh', 'bitrate', 'cursor', 'preview', 'lobitrate', 'lomaxh', 'lofps', 'tl']) if (o[k] != null && Number.isFinite(Number(o[k]))) kv.push(k + '=' + Math.round(Number(o[k])));
       if (o.codec === 'av1') kv.push('codec=1');
       pvOn = o.preview == null ? true : !!Number(o.preview);
       call('videoStart', ...kv).then((g) => { v.gen = g; }, (err) => { if (vid === v) vid = null; if (!v.settled) { v.settled = true; rej(err); } });
@@ -175,7 +175,7 @@
     sources,
     pickSource: async () => true, // 退回浏览器采集时用的是系统内核自己的选择框，这里选的不起作用
     audioApps, audioStart, audioStop, onAudioState: on(subs.audio),
-    caps: async () => ({ native: true, av1: true, lite: true }),
+    caps: async () => ({ native: true, av1: true, tl: true, lite: true }),
     videoStart, videoStop, videoBitrate,
     videoKey: () => call('videoCmd', 'key'),
     videoPreview: (v) => { pvOn = !!v; return call('videoCmd', 'pv ' + (v ? 1 : 0)); },

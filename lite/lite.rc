@@ -7,8 +7,8 @@
 1 24 "lite.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,0,2,0
-PRODUCTVERSION 1,0,2,0
+FILEVERSION 1,0,3,0
+PRODUCTVERSION 1,0,3,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -18,11 +18,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "LiveCord"
       VALUE "FileDescription", "LiveCord 轻量版"
-      VALUE "FileVersion", "1.0.2"
+      VALUE "FileVersion", "1.0.3"
       VALUE "InternalName", "LiveCordLite"
       VALUE "OriginalFilename", "LiveCordLite.exe"
       VALUE "ProductName", "LiveCord 轻量版"
-      VALUE "ProductVersion", "1.0.2"
+      VALUE "ProductVersion", "1.0.3"
     END
   END
   BLOCK "VarFileInfo"

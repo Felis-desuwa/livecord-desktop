@@ -13,6 +13,7 @@
 //   选项：--fps N --maxw W --maxh H（输出不超过这个尺寸，等比缩小） --bitrate BPS --cursor 0|1 --preview 0|1 --pvw W
 //         --codec 0|1（0 = H.264，1 = AV1；AV1 要显卡有硬件编码器，没有就报错退出，由软件退回别的办法）
 //         --lobitrate BPS --lomaxh H --lofps N（另出一路低档，见下面的"管线"）
+//         --tl N（时间分层的层数，2 或 3；不给就不分层。NVIDIA 的 H.264 和 AV1 编码器实测都支持）
 //         --speed N（编码器的质量 / 速度档位 0～100，0 最快；不给就自动选，见 Encoder::init）
 //         --pvraw 1（预览不用共享纹理，改成读回内存后从标准输出送出：类型 4，BGRA。给 WebView2 轻量版用）
 //
@@ -88,7 +89,7 @@ static int die(const char* what, HRESULT hr = 0) { event("{\"ev\":\"error\",\"ms
 static double nowSec() { static LARGE_INTEGER f; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return (double)c.QuadPart / f.QuadPart; }
 static std::string narrow(const wchar_t* w) { std::string s; for (; *w; w++) s += (*w < 128 && *w != '"' && *w != '\\') ? (char)*w : '?'; return s; }
 
-struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0, pvraw = 0, speed = -1; };
+struct Args { DWORD parent = 0; std::string mode; long long t1 = 0, t2 = 0; int fps = 60, maxw = 0, maxh = 0, bitrate = 8000000, cursor = 1, preview = 1, pvw = 960, lobitrate = 0, lomaxh = 720, lofps = 30, codec = 0, pvraw = 0, speed = -1, tl = 0; };
 static Args A;
 static std::atomic<int> gBitrate{0}, gBitrateLo{0};
 static std::atomic<bool> gQuit{false}, gPreview{true};
@@ -259,6 +260,9 @@ struct Encoder {
       setU32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
       setU32(CODECAPI_AVEncMPVGOPSize, 0x7fffffff); // 不定期出关键帧，只在有人要的时候出（key 命令）
       setU32(CODECAPI_AVEncCommonQualityVsSpeed, (ULONG)speed);
+      // 时间分层：3 层时帧的排列是 0-2-1-2，高层的帧不被低层参考，可以整层不发。转发服务器按每个观众的情况挑层
+      // （设备解不动、屏幕刷新率低、网络不够的观众少收帧，画面还是原分辨率、正常速度）。占位帧那边要用同样的分层，见 desktop-vworker.js
+      if (A.tl >= 2 && A.tl <= 3) setU32(CODECAPI_AVEncVideoTemporalLayerCount, (ULONG)A.tl);
     };
     modes();
     com_ptr<IMFMediaType> ot; MFCreateMediaType(ot.put());
@@ -520,8 +524,8 @@ static void statsLoop(HANDLE parent) {
 }
 
 static void announce(const char* ev) {
-  event("{\"ev\":\"%s\",\"codec\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"speed\":%d,\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
-    ev, A.codec == 1 ? "av1" : "h264", pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.enc ? pl.enc->speed : -1, pl.pvW, pl.pvH,
+  event("{\"ev\":\"%s\",\"codec\":\"%s\",\"w\":%d,\"h\":%d,\"srcw\":%d,\"srch\":%d,\"fps\":%d,\"hdr\":%s,\"white\":%.0f,\"enc\":\"%s\",\"speed\":%d,\"tl\":%d,\"pw\":%d,\"ph\":%d,\"low\":%d,\"loh\":%d,\"lofps\":%d,\"handles\":%s}",
+    ev, A.codec == 1 ? "av1" : "h264", pl.outW, pl.outH, pl.srcW, pl.srcH, A.fps, pl.hdr ? "true" : "false", pl.hdr ? 80.0f / pl.whiteScale : 0.0f, pl.enc ? pl.enc->name.c_str() : "", pl.enc ? pl.enc->speed : -1, A.tl >= 2 && A.tl <= 3 ? A.tl : 0, pl.pvW, pl.pvH,
     pl.hasLo ? pl.lo.w : 0, pl.hasLo ? pl.lo.h : 0, pl.hasLo ? pl.lo.fps : 0, pvPool.handlesJson().c_str());
 }
 
@@ -613,7 +617,7 @@ static bool parse(int argc, char** argv) {
     std::string k = argv[i]; int v = atoi(argv[i + 1]);
     if (k == "--fps") A.fps = v; else if (k == "--maxw") A.maxw = v; else if (k == "--maxh") A.maxh = v; else if (k == "--bitrate") A.bitrate = v;
     else if (k == "--cursor") A.cursor = v; else if (k == "--preview") A.preview = v; else if (k == "--pvw") A.pvw = v;
-    else if (k == "--codec") A.codec = v; else if (k == "--pvraw") A.pvraw = v; else if (k == "--speed") A.speed = v;
+    else if (k == "--codec") A.codec = v; else if (k == "--pvraw") A.pvraw = v; else if (k == "--speed") A.speed = v; else if (k == "--tl") A.tl = v;
     else if (k == "--lobitrate") A.lobitrate = v; else if (k == "--lomaxh") A.lomaxh = v; else if (k == "--lofps") A.lofps = v;
   }
   if (A.fps < 1 || A.fps > 480) A.fps = 60;

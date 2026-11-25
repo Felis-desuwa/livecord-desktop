@@ -47,7 +47,7 @@ namespace Gdiplus { using std::min; using std::max; }
 #pragma comment(lib, "version.lib")
 using Microsoft::WRL::ComPtr; using Microsoft::WRL::Callback; using Microsoft::WRL::Make;
 
-#define LC_VERSION L"1.0.2"
+#define LC_VERSION L"1.0.3"
 static const wchar_t* PROD_URL = L"https://live.felisnyan.com";
 enum { WM_APP_NOTES = WM_APP + 1, WM_APP_JSON, WM_APP_REPLY, WM_APP_RELOAD };
 enum { TIMER_RELOAD = 1 };
@@ -248,7 +248,7 @@ static std::vector<Mon> enumMons() {
 static bool startVideo(const std::vector<std::wstring>& kv, std::wstring& why) {
   stopVideo();
   std::wstring cmd = L"\"" + helperPath(L"lc-capture.exe") + L"\" " + std::to_wstring(GetCurrentProcessId()), src, opts;
-  static const wchar_t* KEYS[] = { L"fps", L"maxw", L"maxh", L"bitrate", L"cursor", L"preview", L"lobitrate", L"lomaxh", L"lofps", L"codec" };
+  static const wchar_t* KEYS[] = { L"fps", L"maxw", L"maxh", L"bitrate", L"cursor", L"preview", L"lobitrate", L"lomaxh", L"lofps", L"codec", L"tl" };
   for (auto& s : kv) {
     size_t eq = s.find(L'='); if (eq == std::wstring::npos) continue;
     std::wstring k = s.substr(0, eq), v = s.substr(eq + 1);

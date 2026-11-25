@@ -257,7 +257,7 @@ function startVideo(o) {
     }
   }
   if (o.codec === 'av1') args.push('--codec', '1'); // 默认 H.264
-  for (const k of ['fps', 'maxw', 'maxh', 'bitrate', 'cursor', 'preview', 'pvw', 'lobitrate', 'lomaxh', 'lofps']) if (o[k] != null && Number.isFinite(Number(o[k]))) args.push('--' + k, String(Math.round(Number(o[k]))));
+  for (const k of ['fps', 'maxw', 'maxh', 'bitrate', 'cursor', 'preview', 'pvw', 'lobitrate', 'lomaxh', 'lofps', 'tl']) if (o[k] != null && Number.isFinite(Number(o[k]))) args.push('--' + k, String(Math.round(Number(o[k]))));
   const proc = spawn(CAPTURE, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const { port1, port2 } = new MessageChannelMain();
   const me = video = { proc, info: null, handles: [], port: port1, pv: 0, pvFail: 0 };
@@ -282,7 +282,7 @@ function startVideo(o) {
     const onEvent = (m) => {
       if (m.ev === 'init' || m.ev === 'size') {
         me.info = m; me.handles = (m.handles || []).map((h) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(h)); return b; });
-        const info = { codec: m.codec || 'h264', w: m.w, h: m.h, srcw: m.srcw, srch: m.srch, fps: m.fps, hdr: !!m.hdr, white: m.white, enc: m.enc, pw: m.pw, ph: m.ph, low: m.low || 0, loh: m.loh || 0, lofps: m.lofps || 0 };
+        const info = { codec: m.codec || 'h264', w: m.w, h: m.h, srcw: m.srcw, srch: m.srch, fps: m.fps, hdr: !!m.hdr, white: m.white, enc: m.enc, pw: m.pw, ph: m.ph, low: m.low || 0, loh: m.loh || 0, lofps: m.lofps || 0, tl: m.tl || 0, speed: m.speed };
         if (!settled) { settled = true; resolve(info); win.webContents.postMessage('lc:video-port', null, [port2]); }
         else send('lc:video-state', { state: 'size', ...info });
       } else if (m.ev === 'stats') send('lc:video-state', { state: 'stats', ...m });
@@ -324,7 +324,7 @@ handle('lc:audio-apps', () => listAudioApps());
 handle('lc:audio-start', (o) => { startAudio({ mode: String(o?.mode || 'all'), pid: Number(o?.pid) }); return true; });
 handle('lc:audio-stop', () => { stopAudio(); return true; });
 // 这个版本的软件会什么：网站的界面据此决定给不给选项（旧版本没有这个接口，界面就按"只会 H.264"处理）
-handle('lc:caps', () => ({ native: true, av1: true }));
+handle('lc:caps', () => ({ native: true, av1: true, tl: true })); // tl：助手会时间分层（1.0.3 起）
 handle('lc:video-start', (o) => startVideo(o || {}));
 handle('lc:video-stop', () => { stopVideo(); return true; });
 handle('lc:video-bitrate', (b, lo) => { const v = Math.round(Number(b)); if (v >= 100000 && v <= 200000000) videoCmd('br ' + v); const l = Math.round(Number(lo)); if (l >= 100000 && l <= 50000000) videoCmd('brlo ' + l); return true; });
